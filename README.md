@@ -1,10 +1,12 @@
-# mcp-git-historian
+﻿# mcp-git-historian
 
-**MCP server for git archaeology — churn hotspots, blame summaries, bus factor, commit forensics and file history over any local repository.**
+![tests](https://github.com/AleBrito124356/mcp-git-historian/actions/workflows/tests.yml/badge.svg)
+
+**MCP server for git archaeology â€” churn hotspots, blame summaries, bus factor, commit forensics and file history over any local repository.**
 
 ## Why
 
-Every codebase carries answers to the questions that matter most during maintenance: *Which files keep breaking? Who actually knows this legacy module? When did this weird constant appear? What happens if that one developer leaves?* The answers are buried in git history, but digging them out means chaining `log`, `blame`, `shortlog` and pickaxe invocations with arcane flags — so nobody does it.
+Every codebase carries answers to the questions that matter most during maintenance: *Which files keep breaking? Who actually knows this legacy module? When did this weird constant appear? What happens if that one developer leaves?* The answers are buried in git history, but digging them out means chaining `log`, `blame`, `shortlog` and pickaxe invocations with arcane flags â€” so nobody does it.
 
 `mcp-git-historian` gives your AI assistant those forensic tools directly. It shells out to the `git` CLI you already have (no extra dependencies, no network calls, nothing leaves your machine) and returns structured, LLM-friendly summaries: hotspot rankings, ownership percentages, knowledge silos, and the exact commit where a piece of code first showed up.
 
@@ -18,7 +20,7 @@ Every codebase carries answers to the questions that matter most during maintena
 | `blame_summary` | `repo_path`, `file` | % of surviving lines per author, dominant author, dates of the oldest and newest lines |
 | `bus_factor` | `repo_path`, `top=10` | Per top-level directory: dominant author and share of commits, knowledge silos (>80% one author); global bus factor (min authors covering >50% of commits) |
 | `search_commits` | `repo_path`, `query`, `author=""`, `since=""`, `limit=20` | Case-insensitive commit-message search (`git log --grep`) with optional author/date filters |
-| `find_change` | `repo_path`, `pattern`, `file=""`, `limit=10` | Commits that added/removed the pattern via pickaxe (`git log -S`) — "when did this code appear?" (`-S` tracks occurrence-count changes; `-G` would also match moved lines) |
+| `find_change` | `repo_path`, `pattern`, `file=""`, `limit=10` | Commits that added/removed the pattern via pickaxe (`git log -S`) â€” "when did this code appear?" (`-S` tracks occurrence-count changes; `-G` would also match moved lines) |
 
 ## How it works
 
@@ -43,7 +45,7 @@ pip install -e .
 
 Requires Python 3.10+ and the `git` CLI on your PATH.
 
-**Claude Desktop** — add to `claude_desktop_config.json`:
+**Claude Desktop** â€” add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -68,17 +70,17 @@ claude mcp add git-historian -- python /absolute/path/to/mcp-git-historian/serve
 >
 > **Claude:** *(calls `blame_summary(repo_path="/work/acme-api", file="legacy/parser.py")`)*
 >
-> Ownership is extremely concentrated: **Alice Dev wrote 94.6% of the surviving lines** (Bob Ops has the remaining 5.4%). The oldest line dates to 2019-03-11 and the newest to 2024-08-02 — it is old code, but still being touched.
+> Ownership is extremely concentrated: **Alice Dev wrote 94.6% of the surviving lines** (Bob Ops has the remaining 5.4%). The oldest line dates to 2019-03-11 and the newest to 2024-08-02 â€” it is old code, but still being touched.
 >
 > *(calls `bus_factor(repo_path="/work/acme-api")`)*
 >
-> The `legacy/` directory is a **knowledge silo**: Alice authored 96.2% of all commits touching it. The repository's global bus factor is **2** — just two people account for more than half of all commits. If Alice is unavailable, `legacy/` has no realistic second owner.
+> The `legacy/` directory is a **knowledge silo**: Alice authored 96.2% of all commits touching it. The repository's global bus factor is **2** â€” just two people account for more than half of all commits. If Alice is unavailable, `legacy/` has no realistic second owner.
 >
 > **User:** And where did that `MAGIC_TOKEN` constant in the parser even come from?
 >
 > **Claude:** *(calls `find_change(repo_path="/work/acme-api", pattern="MAGIC_TOKEN", file="legacy/parser.py")`)*
 >
-> The pickaxe found exactly one commit that introduced it: `a1b2c3d` (2019-04-02, Alice Dev) — *"feat: add legacy parser handshake token"*. It has never been removed or re-added since, so that constant has survived untouched for years. I'd recommend pairing someone with Alice on the next `legacy/` change and starting with tests around `parse()`.
+> The pickaxe found exactly one commit that introduced it: `a1b2c3d` (2019-04-02, Alice Dev) â€” *"feat: add legacy parser handshake token"*. It has never been removed or re-added since, so that constant has survived untouched for years. I'd recommend pairing someone with Alice on the next `legacy/` change and starting with tests around `parse()`.
 
 ## Development
 
@@ -91,4 +93,4 @@ The test suite builds a real throwaway git repository (two authors, a rename, a 
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT â€” see [LICENSE](LICENSE).
