@@ -1,0 +1,12 @@
+[project]
+name = "mcp-git-historian"
+version = "0.1.0"
+description = "MCP server for git archaeology — churn hotspots, blame summaries, bus factor, commit forensics and file history over any local repository."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Alejandro Brito", email = "alejandrobritoolivera@gmail.com"}]
+dependencies = ["mcp>=1.2.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
