@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import core
+from mcp_git_historian import core
 
 ALICE = "Alice Dev <alice@example.com>"
 BOB = "Bob Ops <bob@example.com>"

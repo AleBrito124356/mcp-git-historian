@@ -1,12 +1,12 @@
 """mcp-git-historian — MCP server entry point.
 
 Wiring only: every tool delegates to core.py, which shells out to the local
-``git`` CLI. Run over stdio: ``python server.py``.
+``git`` CLI. Run over stdio: ``python -m mcp_git_historian.server``.
 """
 
 from mcp.server.fastmcp import FastMCP
 
-import core
+from . import core
 
 mcp = FastMCP("mcp-git-historian")
 
@@ -117,5 +117,10 @@ def find_change(repo_path: str, pattern: str, file: str = "", limit: int = 10) -
     return core.find_change(repo_path, pattern, file=file, limit=limit)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point for the console script."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
