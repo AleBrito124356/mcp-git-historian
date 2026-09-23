@@ -26,8 +26,10 @@ import subprocess
 import time
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 from typing import Iterator, Optional, Tuple
 
@@ -44,6 +46,9 @@ HOTSPOT_MIN_COMMITS = 3  # a file needs at least this many commits to be flagged
 HOTSPOT_PERCENTILE = 90.0  # ...and must sit in the top decile of its window
 SILO_PERCENT = 80.0  # one author above this share of a directory's commits = silo...
 SILO_MIN_COMMITS = 3  # ...provided the directory has at least this many commits
+ORPHAN_PERCENT = 50.0  # inactive authors own more than this share of a file = orphaned
+MAX_COMMIT_FILES_LISTED = 300  # commit_details lists at most this many files
+MAX_REFS_LISTED = 50  # commit_details lists at most this many branches/tags
 
 # Config overrides so a user's ~/.gitconfig cannot break parsing
 # (signatures injected into log output, colours, non-UTF-8 log encoding,
@@ -852,4 +857,398 @@ def find_change(
             "pattern changed (code added/removed). git's -G flag (regex=true) "
             "instead regex-matches diff lines, also catching edits and moves."
         ),
+    }
+
+
+def change_coupling(
+    repo_path: str,
+    file: str = "",
+    since: str = "1 year ago",
+    min_shared: int = 3,
+    max_files_per_commit: int = 30,
+    top: int = 20,
+) -> dict:
+    """Temporal (change) coupling: pairs of files that keep changing in the
+    same commits, a hidden dependency that static analysis cannot see.
+
+    For each pair: ``shared_commits``, each file's revisions in the window,
+    ``degree`` = shared / min(revisions) (1.0 means every change to the
+    rarer file also touched the other one) and ``jaccard`` = shared / union
+    of the commits touching either file. Rename-aware, merge commits ignored,
+    and commits touching more than ``max_files_per_commit`` files (mass
+    reformatting, licence headers, vendoring) are skipped as noise. With
+    ``file`` it returns the partners of that one file instead of all pairs."""
+    repo = open_repo(repo_path)
+    min_shared = _positive_int("min_shared", min_shared, 3)
+    top = _positive_int("top", top, 20)
+    max_files_per_commit = _positive_int("max_files_per_commit", max_files_per_commit, 30)
+    if max_files_per_commit < 2:
+        raise ValueError("max_files_per_commit must be at least 2 — a pair needs two files.")
+    since_args, since_date = _since_args(repo, since)
+    tracked = _head_files(repo)
+    target = _repo_file(repo, file) if file else None
+    if target is not None and target not in tracked:
+        raise ValueError(
+            f"'{file}' is not a file tracked at HEAD in {repo.root} — pass a path relative "
+            "to the repository root (e.g. 'src/app.py')."
+        )
+
+    tracker = _RenameTracker()
+    revisions: Counter = Counter()
+    shared: Counter = Counter()
+    analyzed = 0
+    skipped = 0
+    for _header, changes in _log_changes(repo, "--no-merges", *since_args):
+        touched = {tracker.resolve(old, new) for old, new, _a, _d in changes}
+        if len(touched) > max_files_per_commit:
+            skipped += 1
+            continue
+        files = sorted(f for f in touched if f in tracked)
+        if not files:
+            continue
+        analyzed += 1
+        revisions.update(files)
+        if target is not None:
+            if target in files:
+                for other in files:
+                    if other != target:
+                        shared[(target, other)] += 1
+        else:
+            for pair in combinations(files, 2):
+                shared[pair] += 1
+
+    def metrics(a: str, b: str, n: int) -> dict:
+        ra, rb = revisions[a], revisions[b]
+        return {
+            "shared_commits": n,
+            "degree": round(n / min(ra, rb), 2),
+            "jaccard": round(n / (ra + rb - n), 2),
+        }
+
+    base = {
+        **_base(repo),
+        "since": since or "all history",
+        "since_date": since_date,
+        "commits_analyzed": analyzed,
+        "commits_skipped_large": skipped,
+        "min_shared": min_shared,
+        "max_files_per_commit": max_files_per_commit,
+    }
+    if target is not None:
+        partners = []
+        for (_t, other), n in shared.items():
+            if n < min_shared:
+                continue
+            partners.append({"file": other, **metrics(target, other, n),
+                             "partner_revisions": revisions[other]})
+        partners.sort(key=lambda p: (-p["degree"], -p["shared_commits"], -p["jaccard"], p["file"]))
+        return {**base, "file": target, "revisions": revisions[target], "partners": partners[:top]}
+
+    pairs = []
+    for (a, b), n in shared.items():
+        if n < min_shared or not (repo.in_scope(a) or repo.in_scope(b)):
+            continue
+        pairs.append({"file_a": a, "file_b": b, **metrics(a, b, n),
+                      "revisions_a": revisions[a], "revisions_b": revisions[b]})
+    pairs.sort(key=lambda p: (-p["degree"], -p["shared_commits"], -p["jaccard"], p["file_a"], p["file_b"]))
+    return {**base, "pairs_found": len(pairs), "pairs": pairs[:top]}
+
+
+def _author_activity(repo: Repo) -> dict[str, tuple[int, str]]:
+    """Latest (timestamp, author-local YYYY-MM-DD) per mailmapped author.
+
+    Merges count here: an integrator who still merges pull requests is still
+    around. The date is the author's own calendar day, like ``%as`` in
+    repo_summary, so the same commit never shows two different dates.
+    """
+    out = run_git(repo.root, "log", f"--pretty=format:%aN{FIELD_SEP}%at{FIELD_SEP}%as")
+    last: dict[str, tuple[int, str]] = {}
+    for line in out.splitlines():
+        parts = line.split(FIELD_SEP)
+        if len(parts) != 3 or not parts[1].isdigit():
+            continue
+        name, stamp, day = parts[0], int(parts[1]), parts[2]
+        if stamp > last.get(name, (-1, ""))[0]:
+            last[name] = (stamp, day)
+    return last
+
+
+def _text_files(repo: Repo) -> tuple[list[str], int]:
+    """Tracked non-empty text files, plus how many binary files were skipped."""
+    out = run_git(repo.root, "ls-files", "-z", "--eol")
+    files, binary = [], 0
+    for entry in out.split("\0"):
+        if "\t" not in entry:
+            continue
+        info, path = entry.split("\t", 1)
+        if "i/-text" in info:
+            binary += 1
+        elif "i/none" not in info:  # i/none = empty file, nothing to own
+            files.append(path)
+    return files, binary
+
+
+def _commit_frequency(repo: Repo) -> Counter:
+    out = run_git(repo.root, "log", "--no-merges", "--no-renames", "--name-only", "-z", "--pretty=format:")
+    return Counter(p.strip("\n") for p in out.split("\0") if p.strip("\n"))
+
+
+def knowledge_risk(
+    repo_path: str,
+    inactive_after: str = "6 months ago",
+    top: int = 20,
+    path: str = "",
+    max_files: int = 200,
+) -> dict:
+    """What breaks if someone leaves? Blames every tracked text file (under
+    ``path`` / the scope; when there are more than ``max_files``, the most
+    frequently changed ones) and compares line ownership with each author's
+    last commit anywhere in the repository. Authors with no commit since
+    ``inactive_after`` are inactive; a file where inactive authors own more
+    than 50% of the lines is ``orphaned``. Returns the riskiest files, a
+    per-author rollup (lines and files each person is the main owner of)
+    and a per-directory rollup."""
+    repo = open_repo(repo_path)
+    top = _positive_int("top", top, 20)
+    max_files = _positive_int("max_files", max_files, 200)
+    if not isinstance(inactive_after, str) or not inactive_after.strip():
+        raise ValueError(
+            "inactive_after must be a git date such as '6 months ago' or '2025-01-01'."
+        )
+    cutoff = _resolve_date(repo, inactive_after, "inactive_after")
+
+    scope = repo.prefix
+    if path:
+        norm = _repo_file(repo, path, allow_dir=True)
+        if (Path(repo.root) / norm).is_file():
+            scope = norm
+        else:
+            scope = norm + "/" if norm else ""
+    group_prefix = scope if scope.endswith("/") or not scope else repo.prefix
+    head = _head_files(repo)
+    text_files, binary_skipped = _text_files(repo)
+    candidates = [f for f in text_files if f in head and (f == scope or f.startswith(scope))]
+    if not candidates:
+        raise ValueError(
+            f"No tracked text files under '{scope or '/'}' in {repo.root} — check 'path'."
+        )
+    considered = len(candidates)
+    truncated = considered > max_files
+    if truncated:
+        freq = _commit_frequency(repo)
+        candidates = sorted(candidates, key=lambda f: (-freq.get(f, 0), f))[:max_files]
+
+    last_seen = _author_activity(repo)
+
+    def blame_one(f: str) -> tuple[str, Counter]:
+        try:
+            return f, _blame(repo, f)[0]
+        except ValueError:
+            return f, Counter()
+
+    workers = max(1, min(8, os.cpu_count() or 2, len(candidates)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        blamed = list(pool.map(blame_one, candidates))
+
+    def active(author: str) -> bool:
+        return last_seen.get(author, (0, ""))[0] >= cutoff
+
+    files = []
+    author_lines: Counter = Counter()
+    author_files: Counter = Counter()
+    dirs: dict[str, dict] = {}
+    for f, counts in blamed:
+        total = sum(counts.values())
+        if total == 0:
+            continue
+        owners = _by_count_then_name(counts.items())
+        main, main_lines = owners[0]
+        inactive_lines = sum(n for a, n in owners if not active(a))
+        inactive_pct = round(inactive_lines * 100 / total, 1)
+        orphaned = inactive_pct > ORPHAN_PERCENT
+        files.append(
+            {
+                "file": f,
+                "lines": total,
+                "main_owner": main,
+                "main_owner_percent": round(main_lines * 100 / total, 1),
+                "main_owner_active": active(main),
+                "main_owner_last_commit": last_seen[main][1] if main in last_seen else None,
+                "inactive_percent": inactive_pct,
+                "orphaned": orphaned,
+                "owners": [
+                    {"author": a, "lines": n, "percent": round(n * 100 / total, 1)}
+                    for a, n in owners[:3]
+                ],
+            }
+        )
+        author_lines.update(counts)
+        author_files[main] += 1
+        d = dirs.setdefault(
+            _dir_key(group_prefix, f),
+            {"files": 0, "lines": 0, "inactive_lines": 0, "orphaned_files": 0},
+        )
+        d["files"] += 1
+        d["lines"] += total
+        d["inactive_lines"] += inactive_lines
+        d["orphaned_files"] += int(orphaned)
+
+    # Riskiest first: most lines held by people who left, then the most lines
+    # held by a single person (a big file only one person understands).
+    files.sort(key=lambda r: (-r["inactive_percent"], -r["owners"][0]["lines"], -r["lines"], r["file"]))
+    total_lines = sum(author_lines.values()) or 1
+    authors = [
+        {
+            "author": a,
+            "active": active(a),
+            "last_commit": last_seen[a][1] if a in last_seen else None,
+            "lines_owned": n,
+            "lines_percent": round(n * 100 / total_lines, 1),
+            "files_as_main_owner": author_files.get(a, 0),
+        }
+        for a, n in _by_count_then_name(author_lines.items())
+    ]
+    directories = [
+        {
+            "directory": d,
+            "files": v["files"],
+            "lines": v["lines"],
+            "orphaned_files": v["orphaned_files"],
+            "inactive_percent": round(v["inactive_lines"] * 100 / v["lines"], 1),
+        }
+        for d, v in sorted(dirs.items(), key=lambda kv: (-kv[1]["inactive_lines"], -kv[1]["lines"], kv[0]))
+    ]
+    return {
+        **_base(repo),
+        "path": scope or None,
+        "inactive_after": inactive_after,
+        "inactive_after_date": _day(cutoff),
+        "inactive_authors": sorted(a for a in author_lines if not active(a)),
+        "files_considered": considered,
+        "files_analyzed": len(files),
+        "orphaned_files": sum(1 for r in files if r["orphaned"]),
+        "binary_files_skipped": binary_skipped,
+        "truncated": truncated,
+        "truncation_note": (
+            f"only the {max_files} most frequently changed of {considered} files were "
+            "blamed; raise max_files to analyse more" if truncated else None
+        ),
+        "files": files[:top],
+        "authors": authors[:top],
+        "directories": directories[:top],
+        "orphan_rule": (
+            f"orphaned when authors with no commit since {_day(cutoff)} own more than "
+            f"{ORPHAN_PERCENT:g}% of the file's lines at HEAD"
+        ),
+    }
+
+
+def _parse_name_status_z(out: str) -> dict[str, tuple[str, str | None, int | None]]:
+    """Parse ``--name-status -z`` into {new_path: (status, old_path, similarity)}."""
+    tokens = out.split("\0")
+    result: dict[str, tuple[str, str | None, int | None]] = {}
+    i = 0
+    while i < len(tokens):
+        status = tokens[i].strip("\n")
+        i += 1
+        if not status:
+            continue
+        code = status[0]
+        if code in "RC":
+            if i + 1 >= len(tokens):
+                break
+            old, new = tokens[i], tokens[i + 1]
+            i += 2
+            similarity = int(status[1:]) if status[1:].isdigit() else None
+            result[new] = (code, old, similarity)
+        else:
+            if i >= len(tokens):
+                break
+            result[tokens[i]] = (code, None, None)
+            i += 1
+    return result
+
+
+def commit_details(repo_path: str, ref: str) -> dict:
+    """Everything about one commit: full message, author and committer (with
+    dates), parents (merge detection), every file changed with its status
+    (A added, M modified, D deleted, R renamed, C copied, T type change) and
+    +/- lines, totals, and the branches and tags that contain it. For merge
+    commits the diff is against the first parent, i.e. what the merge
+    brought into the mainline."""
+    repo = open_repo(repo_path)
+    if not isinstance(ref, str) or not ref.strip():
+        raise ValueError("ref must be a commit hash, branch, tag or expression like 'HEAD~2'.")
+    ref = ref.strip()
+    if ref.startswith("-"):
+        raise ValueError(f"ref must not start with '-' (got {ref!r}) — pass a commit hash or name.")
+    full = _try_git(repo.root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    if not full or not full.strip():
+        raise ValueError(
+            f"Unknown commit '{ref}' in {repo.root} — pass a full or abbreviated hash, a "
+            "branch or tag name, or an expression like 'HEAD~2'."
+        )
+    sha = full.strip()
+    fmt = FIELD_SEP.join(["%H", "%h", "%P", "%aN", "%aE", "%aI", "%cN", "%cE", "%cI", "%s", "%b"])
+    meta = run_git(repo.root, "show", "-s", f"--format={fmt}", sha).split(FIELD_SEP)
+    full_hash, short, parents, a_name, a_mail, a_date, c_name, c_mail, c_date, subject = meta[:10]
+    body = FIELD_SEP.join(meta[10:]).strip("\n")
+    parent_list = parents.split()
+
+    diff_args = ["diff-tree", "-r", "-M", "-z", "--no-commit-id"]
+    target = [parent_list[0], sha] if parent_list else ["--root", sha]
+    numstat = _parse_numstat_z(run_git(repo.root, *diff_args, "--numstat", *target))
+    status = _parse_name_status_z(run_git(repo.root, *diff_args, "--name-status", *target))
+
+    files = []
+    insertions = deletions = 0
+    for old, new, add, dele in numstat:
+        code, old_path, similarity = status.get(new, ("M", None, None))
+        entry: dict = {"path": new, "status": code, "lines_added": add, "lines_deleted": dele}
+        if add is None:
+            entry["binary"] = True
+        if code in "RC":
+            entry["old_path"] = old_path or old
+            entry["similarity"] = similarity
+        files.append(entry)
+        insertions += add or 0
+        deletions += dele or 0
+
+    def refs(namespace: str) -> list[str]:
+        # Full ref names so symbolic "refs/remotes/origin/HEAD" can be dropped
+        # (its short form is just "origin", which reads like a branch).
+        out = _try_git(repo.root, "for-each-ref", "--contains", sha,
+                       "--format=%(refname)", namespace + "/")
+        prefix = namespace + "/"
+        return [n[len(prefix):] for n in (out or "").splitlines()
+                if n.startswith(prefix) and not n.endswith("/HEAD")]
+
+    branches = refs("refs/heads") + refs("refs/remotes")
+    tags = refs("refs/tags")
+    described = (_try_git(repo.root, "describe", "--contains", sha) or "").strip()
+    if len(parent_list) > 1:
+        diff_against = "first parent (what the merge brought into the mainline)"
+    elif parent_list:
+        diff_against = "parent"
+    else:
+        diff_against = "empty tree (root commit)"
+    return {
+        **_base(repo),
+        "hash": full_hash,
+        "short_hash": short,
+        "subject": subject,
+        "body": body,
+        "author": {"name": a_name, "email": a_mail, "date": a_date},
+        "committer": {"name": c_name, "email": c_mail, "date": c_date},
+        "parents": parent_list,
+        "is_merge": len(parent_list) > 1,
+        "diff_against": diff_against,
+        "stats": {"files_changed": len(files), "insertions": insertions, "deletions": deletions},
+        "files": files[:MAX_COMMIT_FILES_LISTED],
+        "files_truncated": len(files) > MAX_COMMIT_FILES_LISTED,
+        "branches": branches[:MAX_REFS_LISTED],
+        "branch_count": len(branches),
+        "tags": tags[:MAX_REFS_LISTED],
+        "tag_count": len(tags),
+        "first_tag": described or None,
     }

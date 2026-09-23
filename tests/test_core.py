@@ -7,7 +7,7 @@ installed. The fixtures live in conftest.py and pin every commit date.
 from pathlib import Path
 
 import pytest
-from conftest import git
+from conftest import git, rev
 
 from mcp_git_historian import core
 
@@ -400,3 +400,147 @@ def test_find_change_regex_mode_and_rename_following(forensics_repo: Path):
     assert fc["mode"].startswith("-G")
     with pytest.raises(ValueError, match="Invalid regular expression"):
         core.find_change(str(forensics_repo), "(", regex=True)
+
+
+# ---------------------------------------------------------------------------
+# change_coupling
+# ---------------------------------------------------------------------------
+
+def test_change_coupling_pairs(forensics_repo: Path):
+    cc = core.change_coupling(str(forensics_repo), since="")
+    assert cc["commits_skipped_large"] == 1  # the 32-file licence sweep
+    assert cc["commits_analyzed"] == 17
+    assert cc["pairs"][0] == {
+        "file_a": "src/api.py", "file_b": "tests/test_api.py",
+        "shared_commits": 4, "degree": 1.0, "jaccard": 1.0,
+        "revisions_a": 4, "revisions_b": 4,
+    }
+    # rename-aware: two of the three shared commits touched src/util.py
+    assert cc["pairs"][1] == {
+        "file_a": "src/app.py", "file_b": "src/helpers.py",
+        "shared_commits": 3, "degree": 0.5, "jaccard": 0.3,
+        "revisions_a": 7, "revisions_b": 6,
+    }
+    assert cc["pairs_found"] == 2
+
+
+def test_change_coupling_skips_mass_commits(forensics_repo: Path):
+    default = core.change_coupling(str(forensics_repo), since="", min_shared=1, top=1000)
+    pairs = {(p["file_a"], p["file_b"]) for p in default["pairs"]}
+    assert ("legacy/parser.py", "src/app.py") not in pairs  # they only met in the sweep
+    wide = core.change_coupling(str(forensics_repo), since="", min_shared=1,
+                                max_files_per_commit=40, top=1000)
+    pairs = {(p["file_a"], p["file_b"]) for p in wide["pairs"]}
+    assert ("legacy/parser.py", "src/app.py") in pairs
+    assert wide["commits_skipped_large"] == 0
+
+
+def test_change_coupling_for_one_file(forensics_repo: Path):
+    cc = core.change_coupling(str(forensics_repo), file="src/app.py", since="", min_shared=1)
+    assert cc["revisions"] == 7
+    assert [(p["file"], p["shared_commits"]) for p in cc["partners"]] == [
+        ("src/helpers.py", 3), ("src/api.py", 1), ("tests/test_api.py", 1),
+    ]
+    with pytest.raises(ValueError, match="not a file tracked at HEAD"):
+        core.change_coupling(str(forensics_repo), file="src/util.py", since="")
+    with pytest.raises(ValueError, match="max_files_per_commit must be at least 2"):
+        core.change_coupling(str(forensics_repo), max_files_per_commit=1)
+
+
+# ---------------------------------------------------------------------------
+# knowledge_risk
+# ---------------------------------------------------------------------------
+
+def test_knowledge_risk_flags_orphaned_files(forensics_repo: Path):
+    kr = core.knowledge_risk(str(forensics_repo), inactive_after="2026-01-01")
+    assert kr["inactive_authors"] == ["Carol Gone"]
+    assert kr["files_analyzed"] == 38
+    assert kr["orphaned_files"] == 2
+    lexer, parser = kr["files"][0], kr["files"][1]
+    assert lexer["file"] == "legacy/lexer.py" and lexer["orphaned"] is True
+    assert lexer["inactive_percent"] == 100.0
+    assert lexer["main_owner"] == "Carol Gone" and lexer["main_owner_last_commit"] == "2025-06-20"
+    assert parser["file"] == "legacy/parser.py" and parser["inactive_percent"] == 83.3
+    assert kr["directories"][0] == {
+        "directory": "legacy", "files": 2, "lines": 15, "orphaned_files": 2, "inactive_percent": 93.3,
+    }
+    carol = next(a for a in kr["authors"] if a["author"] == "Carol Gone")
+    assert carol == {"author": "Carol Gone", "active": False, "last_commit": "2025-06-20",
+                     "lines_owned": 14, "lines_percent": 11.4, "files_as_main_owner": 2}
+
+
+def test_knowledge_risk_everyone_active(forensics_repo: Path):
+    kr = core.knowledge_risk(str(forensics_repo), inactive_after="2025-01-01")
+    assert kr["orphaned_files"] == 0
+    assert kr["inactive_authors"] == []
+
+
+def test_knowledge_risk_path_and_truncation(forensics_repo: Path):
+    scoped = core.knowledge_risk(str(forensics_repo), inactive_after="2026-01-01", path="legacy")
+    assert scoped["path"] == "legacy/"
+    assert [f["file"] for f in scoped["files"]] == ["legacy/lexer.py", "legacy/parser.py"]
+    capped = core.knowledge_risk(str(forensics_repo), inactive_after="2026-01-01", max_files=5)
+    assert capped["truncated"] is True
+    assert capped["files_considered"] == 38 and capped["files_analyzed"] == 5
+    assert "raise max_files" in capped["truncation_note"]
+    # the most frequently changed files are the ones kept
+    assert {f["file"] for f in capped["files"]} >= {"src/app.py", "src/api.py", "tests/test_api.py"}
+
+
+def test_knowledge_risk_skips_binary_files(forensics_repo: Path, tmp_path: Path):
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", str(forensics_repo), str(clone))
+    (clone / "logo.bin").write_bytes(bytes(range(256)) * 4)
+    git(clone, "add", "logo.bin")
+    git(clone, "-c", "user.name=T", "-c", "user.email=t@example.com",
+        "commit", "-q", "-m", "add binary", date="2026-05-11 10:00:00 +0000")
+    kr = core.knowledge_risk(str(clone), inactive_after="2026-01-01")
+    assert kr["binary_files_skipped"] == 1
+    assert "logo.bin" not in [f["file"] for f in kr["files"]]
+
+
+# ---------------------------------------------------------------------------
+# commit_details
+# ---------------------------------------------------------------------------
+
+def test_commit_details_rename(forensics_repo: Path):
+    cd = core.commit_details(str(forensics_repo), rev(forensics_repo, "refactor: rename util to helpers"))
+    assert cd["is_merge"] is False and len(cd["parents"]) == 1
+    assert cd["author"] == {"name": "Alice Dev", "email": "alice@example.com", "date": "2026-02-01T10:00:00Z"}
+    files = {f["path"]: f for f in cd["files"]}
+    assert files["src/helpers.py"]["status"] == "R"
+    assert files["src/helpers.py"]["old_path"] == "src/util.py"
+    assert files["src/helpers.py"]["similarity"] == 100
+    assert files[".mailmap"]["status"] == "A"
+    assert cd["stats"] == {"files_changed": 2, "insertions": 1, "deletions": 0}
+    assert cd["tags"] == ["v1.0.0"] and cd["first_tag"] == "v1.0.0~4"
+    assert set(cd["branches"]) == {"main", "feature/greeting", "feature/docs"}
+
+
+def test_commit_details_merge(forensics_repo: Path):
+    cd = core.commit_details(str(forensics_repo), rev(forensics_repo, "Merge branch 'feature/greeting'"))
+    assert cd["is_merge"] is True and len(cd["parents"]) == 2
+    assert cd["author"]["name"] == "Maint Merger"
+    assert cd["diff_against"].startswith("first parent")
+    assert sorted(f["path"] for f in cd["files"]) == ["src/api.py", "src/app.py", "tests/test_api.py"]
+    assert cd["tags"] == [] and cd["first_tag"] is None
+
+
+def test_commit_details_root_and_refs(forensics_repo: Path):
+    root = core.commit_details(str(forensics_repo), rev(forensics_repo, "feat: legacy parser and lexer"))
+    assert root["parents"] == [] and root["diff_against"].startswith("empty tree")
+    assert {f["status"] for f in root["files"]} == {"A"}
+    by_tag = core.commit_details(str(forensics_repo), "v1.0.0")
+    assert by_tag["subject"] == "fix: api off-by-one"
+    head = core.commit_details(str(forensics_repo), "HEAD")
+    assert head["subject"] == "feat: app config" and head["branches"] == ["main"]
+    short = core.commit_details(str(forensics_repo), head["short_hash"])
+    assert short["hash"] == head["hash"]
+
+
+def test_commit_details_rejects_bad_refs(forensics_repo: Path):
+    with pytest.raises(ValueError, match="Unknown commit 'nope'"):
+        core.commit_details(str(forensics_repo), "nope")
+    with pytest.raises(ValueError, match="must not start with '-'"):
+        core.commit_details(str(forensics_repo), "--output=pwned.txt")
+    assert not (forensics_repo / "pwned.txt").exists()
