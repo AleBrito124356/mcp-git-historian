@@ -1,3 +1,4 @@
-"""MCP server for git archaeology: churn hotspots, blame summaries, bus factor."""
+"""MCP server and CLI for git archaeology: rename-aware churn hotspots, change
+coupling, knowledge-loss risk, bus factor, blame and commit forensics."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

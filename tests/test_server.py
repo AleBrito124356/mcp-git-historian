@@ -2,8 +2,10 @@
 
 * In-process through the installed SDK's own client (``mcp.Client`` on mcp
   2.x, ``create_connected_server_and_client_session`` on mcp 1.x).
-* A real subprocess (``python -m mcp_git_historian.server``) speaking
-  newline-delimited JSON-RPC over stdio, with no SDK client involved.
+* A real subprocess speaking newline-delimited JSON-RPC over stdio, with no
+  SDK client involved at all, for both ``python -m mcp_git_historian.server``
+  and the ``mcp-git-historian`` console entry point (``python -m
+  mcp_git_historian`` with no arguments).
 
 Skipped as a whole when the ``mcp`` package is not installed, so the core
 and CLI tests still run without it.
@@ -41,6 +43,7 @@ EXPECTED_TOOLS = {
     "change_coupling": ["repo_path"],
     "knowledge_risk": ["repo_path"],
     "commit_details": ["repo_path", "ref"],
+    "health_report": ["repo_path"],
 }
 
 
@@ -115,6 +118,7 @@ def test_every_tool_runs_end_to_end(forensics_repo: Path):
         ("change_coupling", {"repo_path": repo, "since": ""}),
         ("knowledge_risk", {"repo_path": repo, "inactive_after": "2026-01-01", "top": 2}),
         ("commit_details", {"repo_path": repo, "ref": merge}),
+        ("health_report", {"repo_path": repo, "since": "", "inactive_after": "2026-01-01"}),
     ]
     results = call_all(calls)
     for (name, _), result in zip(calls, results):
@@ -133,6 +137,8 @@ def test_every_tool_runs_end_to_end(forensics_repo: Path):
     assert by_name["change_coupling"]["pairs"][0]["degree"] == 1.0
     assert by_name["knowledge_risk"]["files"][0]["orphaned"] is True
     assert by_name["commit_details"]["is_merge"] is True
+    assert by_name["health_report"]["markdown"].startswith("# Git health report: ")
+    assert "1. `legacy/parser.py`" in by_name["health_report"]["markdown"]
 
 
 def test_tool_errors_reach_the_model_verbatim(forensics_repo: Path, tmp_path: Path):
@@ -194,7 +200,11 @@ class StdioPeer:
             self.proc.kill()
 
 
-@pytest.mark.parametrize("entry", [["-m", "mcp_git_historian.server"]], ids=["server-module"])
+@pytest.mark.parametrize(
+    "entry",
+    [["-m", "mcp_git_historian.server"], ["-m", "mcp_git_historian"], ["-m", "mcp_git_historian", "serve"]],
+    ids=["server-module", "cli-default", "cli-serve"],
+)
 def test_stdio_server_answers_initialize_list_and_call(entry: list[str], forensics_repo: Path):
     peer = StdioPeer(*entry)
     try:

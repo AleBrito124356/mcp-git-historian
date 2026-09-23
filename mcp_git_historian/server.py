@@ -35,7 +35,7 @@ except ModuleNotFoundError:  # mcp 1.x
 
 from mcp.types import ToolAnnotations
 
-from . import __version__, core
+from . import __version__, core, report
 
 INSTRUCTIONS = """\
 Git archaeology over repositories on this machine. Every tool is read-only.
@@ -46,7 +46,8 @@ Git archaeology over repositories on this machine. Every tool is read-only.
 - Start with repo_summary, then hotspots (what changes most), change_coupling
   (what changes together), bus_factor / knowledge_risk (who knows what, and
   what is orphaned), and file_history / blame_summary / commit_details /
-  find_change / search_commits to dig into specifics.
+  find_change / search_commits to dig into specifics. health_report returns
+  all of the overview in one Markdown document.
 - Author names are .mailmap-resolved; merge commits are excluded from
   authorship and churn statistics unless include_merges is true.
 - Dates such as since / inactive_after accept git date expressions:
@@ -255,6 +256,26 @@ def commit_details(
     contain it (plus the first tag that includes it). Merges are diffed
     against their first parent."""
     return core.commit_details(repo_path, ref)
+
+
+@_tool("Health report")
+def health_report(
+    repo_path: RepoPath,
+    since: Since = "1 year ago",
+    inactive_after: Annotated[str, Field(description="Authors with no commit since this git date are "
+                                                     "considered gone.")] = "6 months ago",
+    top: Annotated[int, Field(description="Rows per section.", ge=1)] = 10,
+    max_files: Annotated[int, Field(description="Blame at most this many files.", ge=1)] = 200,
+) -> dict[str, Any]:
+    """One-call Markdown health report combining repo_summary, hotspots,
+    change_coupling, bus_factor and knowledge_risk, with a "what to look at
+    first" list of files that change often AND are orphaned, single-owner or
+    strongly coupled. Use it for an overview; use the individual tools to dig
+    into details. Returns {"markdown": ...}."""
+    markdown = report.build_report(
+        repo_path, since=since, inactive_after=inactive_after, top=top, max_files=max_files
+    )
+    return {"repo_path": repo_path, "markdown": markdown}
 
 
 def main() -> None:
