@@ -1,152 +1,15 @@
-"""Tests for core.py — build a real git repo in a temp dir and interrogate it.
+"""Tests for core.py: build real git repos in a temp dir and interrogate them.
 
 No mcp import anywhere: these tests must pass without the mcp package
-installed. Commit dates are pinned via GIT_AUTHOR_DATE / GIT_COMMITTER_DATE
-for determinism.
+installed. The fixtures live in conftest.py and pin every commit date.
 """
 
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from conftest import git, rev
 
 from mcp_git_historian import core
-
-ALICE = "Alice Dev <alice@example.com>"
-BOB = "Bob Ops <bob@example.com>"
-
-
-def _git(repo: Path, *args: str, date: str = "") -> None:
-    env = os.environ.copy()
-    if date:
-        env["GIT_AUTHOR_DATE"] = date
-        env["GIT_COMMITTER_DATE"] = date
-    subprocess.run(
-        ["git", "-C", str(repo), *args],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-
-def _commit(repo: Path, message: str, author: str, date: str) -> None:
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-m", message, f"--author={author}", date=date)
-
-
-def _write(repo: Path, rel: str, content: str) -> None:
-    path = repo / rel
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8", newline="\n")
-
-
-APP_V1 = """def main():
-    print("hello")
-
-
-if __name__ == "__main__":
-    main()
-"""
-
-APP_V2 = """def main():
-    print("hello")
-
-
-def handle_empty(value):
-    return value or ""
-
-
-if __name__ == "__main__":
-    main()
-"""
-
-APP_V3 = """def main():
-    print("hello")
-
-
-def handle_empty(value):
-    return value or ""
-
-
-def greet(name):
-    return "Hi " + name
-
-
-if __name__ == "__main__":
-    main()
-"""
-
-APP_V4 = APP_V3.replace('"Hi " + name', '"Hello " + name')
-
-PARSER_V1 = """MAGIC_TOKEN = "legacy-v1"
-
-
-def parse(data):
-    return data.split(",")
-"""
-
-PARSER_V2 = """MAGIC_TOKEN = "legacy-v1"
-
-
-def parse(data):
-    return [item.strip() for item in data.split(",")]
-"""
-
-PARSER_V3 = PARSER_V2 + """
-
-def parse_unicode(data):
-    return parse(data.encode("utf-8", "replace").decode("utf-8"))
-"""
-
-
-@pytest.fixture(scope="session")
-def repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """A real git repo: 10 commits, 2 authors, a rename, and a deleted file."""
-    repo = tmp_path_factory.mktemp("histrepo")
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.name", "Test Runner")
-    _git(repo, "config", "user.email", "runner@example.com")
-    _git(repo, "config", "commit.gpgsign", "false")
-    _git(repo, "config", "core.autocrlf", "false")
-
-    # 1 — Alice starts the app
-    _write(repo, "src/app.py", APP_V1)
-    _commit(repo, "feat: initial app", ALICE, "2026-01-05 10:00:00 +0000")
-    # 2 — Alice adds the legacy parser (her private kingdom)
-    _write(repo, "legacy/parser.py", PARSER_V1)
-    _commit(repo, "feat: add legacy parser", ALICE, "2026-01-18 10:00:00 +0000")
-    # 3 — Bob fixes a bug in the app
-    _write(repo, "src/app.py", APP_V2)
-    _commit(repo, "fix: handle empty input bug", BOB, "2026-02-03 10:00:00 +0000")
-    # 4 — Alice adds docs
-    _write(repo, "docs/notes.md", "# Notes\n\nSome notes.\n")
-    _commit(repo, "docs: add notes", ALICE, "2026-02-15 10:00:00 +0000")
-    # 5 — Alice touches the parser again
-    _write(repo, "legacy/parser.py", PARSER_V2)
-    _commit(repo, "refactor: tidy legacy parser", ALICE, "2026-03-01 10:00:00 +0000")
-    # 6 — Bob adds a feature and a temp file at the repo root
-    _write(repo, "src/app.py", APP_V3)
-    _write(repo, "old.txt", "temporary\n")
-    _commit(repo, "feat: add greet and temp file", BOB, "2026-03-12 10:00:00 +0000")
-    # 7 — Alice renames the docs file
-    _git(repo, "mv", "docs/notes.md", "docs/guide.md")
-    _commit(repo, "docs: rename notes to guide", ALICE, "2026-04-02 10:00:00 +0000")
-    # 8 — Bob deletes the temp file
-    _git(repo, "rm", "-q", "old.txt")
-    _commit(repo, "chore: remove temp file", BOB, "2026-04-20 10:00:00 +0000")
-    # 9 — Alice fixes Bob's greeting
-    _write(repo, "src/app.py", APP_V4)
-    _commit(repo, "fix: bug in greeting punctuation", ALICE, "2026-05-06 10:00:00 +0000")
-    # 10 — Alice extends the parser
-    _write(repo, "legacy/parser.py", PARSER_V3)
-    _commit(repo, "feat: parser handles unicode", ALICE, "2026-05-20 10:00:00 +0000")
-    return repo
-
 
 # ---------------------------------------------------------------------------
 # run_git / error handling
@@ -169,9 +32,32 @@ def test_non_repo_dir_raises_clear_error(tmp_path: Path):
 def test_empty_repo_raises_clear_error(tmp_path: Path):
     empty = tmp_path / "empty"
     empty.mkdir()
-    _git(empty, "init", "-q", "-b", "main")
+    git(empty, "init", "-q", "-b", "main")
     with pytest.raises(ValueError, match="no commits yet"):
         core.repo_summary(str(empty))
+
+
+def test_file_instead_of_directory_raises_clear_error(repo: Path):
+    with pytest.raises(ValueError, match="is a file, not a directory"):
+        core.repo_summary(str(repo / "src" / "app.py"))
+
+
+def test_git_dir_itself_is_rejected(repo: Path):
+    with pytest.raises(ValueError, match="not inside a git work tree"):
+        core.repo_summary(str(repo / ".git"))
+
+
+def test_timeout_is_configurable(repo: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv(core.TIMEOUT_ENV, "120")
+    assert core.git_timeout() == 120.0
+    monkeypatch.setenv(core.TIMEOUT_ENV, "0.001")  # far too short for any git call
+    with pytest.raises(ValueError, match=r"timed out after 0\.001s.*GIT_HISTORIAN_TIMEOUT"):
+        core.repo_summary(str(repo))
+    monkeypatch.setenv(core.TIMEOUT_ENV, "soon")
+    with pytest.raises(ValueError, match="not a positive number of seconds"):
+        core.repo_summary(str(repo))
+    monkeypatch.delenv(core.TIMEOUT_ENV)
+    assert core.git_timeout() == core.GIT_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -205,11 +91,24 @@ def test_summary_monthly_activity(repo: Path):
     assert sum(activity.values()) == 10
 
 
+def test_summary_mailmap_and_merges(forensics_repo: Path):
+    s = core.repo_summary(str(forensics_repo))
+    assert s["total_commits"] == 20
+    assert s["merge_commits"] == 2
+    names = [c["author"] for c in s["top_contributors"]]
+    # "alice <alice@personal.dev>" is folded into Alice Dev by .mailmap and the
+    # integrator who only merged pull requests is not a contributor
+    assert names == ["Alice Dev", "Bob Ops", "Carol Gone"]
+    assert s["top_contributors"][0]["commits"] == 9
+    with_merges = core.repo_summary(str(forensics_repo), include_merges=True)
+    assert {"author": "Maint Merger", "commits": 2} in with_merges["top_contributors"]
+
+
 # ---------------------------------------------------------------------------
 # hotspots
 # ---------------------------------------------------------------------------
 
-def test_hotspots_ranking_and_hints(repo: Path):
+def test_hotspots_ranking_and_percentiles(repo: Path):
     h = core.hotspots(str(repo), since="2020-01-01")
     files = [e["file"] for e in h["hotspots"]]
     assert files[0] == "src/app.py"
@@ -217,7 +116,11 @@ def test_hotspots_ranking_and_hints(repo: Path):
     top = h["hotspots"][0]
     assert top["commits"] == 4
     assert top["lines_added"] > 0
-    assert top["hint"] == "high churn — candidate for refactoring or extra review"
+    assert top["churn_percentile"] == 83.3
+    # Only three files changed: none of them is a statistical outlier, so the
+    # 0.1.x behaviour of stamping the first three rows "high churn" is gone.
+    assert all("hint" not in e for e in h["hotspots"])
+    assert h["since_date"] == "2020-01-01"
 
 
 def test_hotspots_excludes_deleted_files(repo: Path):
@@ -230,6 +133,46 @@ def test_hotspots_excludes_deleted_files(repo: Path):
 def test_hotspots_respects_top(repo: Path):
     h = core.hotspots(str(repo), since="2020-01-01", top=1)
     assert len(h["hotspots"]) == 1
+
+
+def test_hotspots_follow_renames(forensics_repo: Path):
+    """Regression: commits made as src/util.py used to vanish after the rename."""
+    h = core.hotspots(str(forensics_repo), since="")
+    helpers = next(e for e in h["hotspots"] if e["file"] == "src/helpers.py")
+    history = core.file_history(str(forensics_repo), "src/helpers.py")
+    assert helpers["commits"] == history["count"] == 6
+    assert helpers["renamed_from"] == ["src/util.py"]
+    assert helpers["lines_added"] == 12
+    assert "src/util.py" not in [e["file"] for e in h["hotspots"]]
+
+
+def test_hotspot_hint_needs_real_churn(forensics_repo: Path):
+    """Regression: .mailmap (1 commit) used to be flagged as 'high churn'."""
+    h = core.hotspots(str(forensics_repo), since="", top=50)
+    flagged = [e["file"] for e in h["hotspots"] if "hint" in e]
+    assert flagged == ["src/app.py", "src/helpers.py", "src/api.py", "tests/test_api.py"]
+    rows = {e["file"]: e for e in h["hotspots"]}
+    assert rows["src/app.py"]["churn_percentile"] == 98.7
+    assert rows[".mailmap"]["commits"] == 1 and "hint" not in rows[".mailmap"]
+    assert rows["legacy/parser.py"]["commits"] == 3 and "hint" not in rows["legacy/parser.py"]
+    assert h["files_changed"] == 38
+
+
+def test_hotspots_on_subdirectory(forensics_repo: Path):
+    """Regression: pointing repo_path at a sub-folder silently returned nothing."""
+    h = core.hotspots(str(forensics_repo / "src"), since="")
+    assert h["scope"] == "src/"
+    assert [e["file"] for e in h["hotspots"]] == ["src/app.py", "src/helpers.py", "src/api.py"]
+    assert h["hotspots"][0]["commits"] == 8
+
+
+def test_hotspots_reject_bad_top_and_dates(repo: Path):
+    with pytest.raises(ValueError, match="top must be at least 1"):
+        core.hotspots(str(repo), top=-1)
+    with pytest.raises(ValueError, match="top must be an integer"):
+        core.hotspots(str(repo), top=True)
+    with pytest.raises(ValueError, match="could not understand since='garbage'"):
+        core.hotspots(str(repo), since="garbage")
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +200,25 @@ def test_file_history_unknown_file_raises(repo: Path):
         core.file_history(str(repo), "nope/missing.txt")
 
 
+def test_file_history_path_forms(forensics_repo: Path):
+    """Root-relative, sub-folder-relative, absolute and Windows-style paths all resolve."""
+    root_rel = core.file_history(str(forensics_repo), "src/app.py")
+    from_subdir = core.file_history(str(forensics_repo / "src"), "app.py")
+    absolute = core.file_history(str(forensics_repo), str(forensics_repo / "src" / "app.py"))
+    backslash = core.file_history(str(forensics_repo), "src\\app.py")
+    for result in (from_subdir, absolute, backslash):
+        assert result["file"] == "src/app.py"
+        assert result["count"] == root_rel["count"] == 8
+    assert root_rel["commits"][-1]["author"] == "Alice Dev"
+    with pytest.raises(ValueError, match="limit must be at least 1"):
+        core.file_history(str(forensics_repo), "src/app.py", limit=0)
+
+
+def test_file_history_rejects_paths_outside_repo(forensics_repo: Path, tmp_path: Path):
+    with pytest.raises(ValueError, match="outside the repository"):
+        core.file_history(str(forensics_repo), str(tmp_path / "elsewhere.py"))
+
+
 # ---------------------------------------------------------------------------
 # blame_summary
 # ---------------------------------------------------------------------------
@@ -280,6 +242,12 @@ def test_blame_summary_line_dates(repo: Path):
 def test_blame_summary_missing_file_raises(repo: Path):
     with pytest.raises(ValueError):
         core.blame_summary(str(repo), "nope/missing.txt")
+
+
+def test_blame_summary_uses_mailmap(forensics_repo: Path):
+    b = core.blame_summary(str(forensics_repo), "src/helpers.py")
+    assert {a["author"] for a in b["authors"]} == {"Alice Dev", "Bob Ops"}
+    assert b["total_lines"] == 10
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +277,45 @@ def test_bus_factor_detects_silo(repo: Path):
     assert src["knowledge_silo"] is False
 
 
+def test_bus_factor_mailmap_merges_identities(forensics_repo: Path):
+    """Regression: one person with two e-mail addresses counted as two authors."""
+    bf = core.bus_factor(str(forensics_repo))
+    names = [a["author"] for a in bf["top_authors"]]
+    assert "alice" not in names
+    assert names == ["Alice Dev", "Bob Ops", "Carol Gone"]
+    assert bf["total_authors"] == 3
+    assert bf["top_authors"][0] == {"author": "Alice Dev", "commits": 9, "percent": 50.0}
+    assert bf["bus_factor"] == 2  # Alice's 50% is not *more* than half
+
+
+def test_bus_factor_excludes_merge_only_integrators(forensics_repo: Path):
+    """Regression: a maintainer who only merged PRs counted as a contributor."""
+    bf = core.bus_factor(str(forensics_repo))
+    assert bf["total_commits"] == 18
+    assert bf["merge_commits_excluded"] == 2
+    assert "Maint Merger" not in [a["author"] for a in bf["top_authors"]]
+    with_merges = core.bus_factor(str(forensics_repo), include_merges=True)
+    assert with_merges["total_commits"] == 20
+    assert with_merges["total_authors"] == 4
+    assert {"author": "Maint Merger", "commits": 2, "percent": 10.0} in with_merges["top_authors"]
+
+
+def test_bus_factor_ignores_single_commit_directories(forensics_repo: Path):
+    bf = core.bus_factor(str(forensics_repo))
+    docs = next(d for d in bf["directories"] if d["directory"] == "docs")
+    assert docs["commits"] == 1 and docs["dominant_percent"] == 100.0
+    assert docs["knowledge_silo"] is False
+    assert bf["knowledge_silos"] == []
+
+
+def test_bus_factor_on_subdirectory(forensics_repo: Path):
+    bf = core.bus_factor(str(forensics_repo / "legacy"))
+    assert bf["scope"] == "legacy/"
+    assert bf["total_commits"] == 4
+    assert bf["top_authors"][0] == {"author": "Carol Gone", "commits": 3, "percent": 75.0}
+    assert [d["directory"] for d in bf["directories"]] == ["legacy"]
+
+
 # ---------------------------------------------------------------------------
 # search_commits
 # ---------------------------------------------------------------------------
@@ -333,6 +340,37 @@ def test_search_respects_limit_and_rejects_empty_query(repo: Path):
         core.search_commits(str(repo), "   ")
 
 
+def test_search_is_literal_by_default(forensics_repo: Path):
+    """Regression: '[WIP' crashed git and 'fix: [WIP]' matched nothing."""
+    unmatched = core.search_commits(str(forensics_repo), "[WIP")
+    assert unmatched["count"] == 1
+    assert unmatched["mode"] == "literal text"
+    exact = core.search_commits(str(forensics_repo), "fix: [WIP]")
+    assert [c["subject"] for c in exact["commits"]] == ["fix: [WIP] thing"]
+    assert core.search_commits(str(forensics_repo), "a.i")["count"] == 0  # '.' is not a wildcard
+
+
+def test_search_regex_mode(forensics_repo: Path):
+    fixes = core.search_commits(str(forensics_repo), "^fix", regex=True)
+    assert [c["subject"] for c in fixes["commits"]] == [
+        "fix: [WIP] thing", "fix: api off-by-one", "fix: helpers edge case", "fix: lexer handles tabs",
+    ]
+    with pytest.raises(ValueError, match=r"Invalid regular expression '\[WIP'.*regex=false"):
+        core.search_commits(str(forensics_repo), "[WIP", regex=True)
+
+
+def test_search_author_filter_is_mailmap_aware(forensics_repo: Path):
+    wired = core.search_commits(str(forensics_repo), "wire", author="Alice Dev")
+    assert wired["count"] == 1
+    assert wired["commits"][0]["author"] == "Alice Dev"  # committed as "alice"
+
+
+def test_search_rejects_negative_limit(forensics_repo: Path):
+    """Regression: limit=-1 used to mean 'unlimited' to git."""
+    with pytest.raises(ValueError, match="limit must be at least 1"):
+        core.search_commits(str(forensics_repo), "fix", limit=-1)
+
+
 # ---------------------------------------------------------------------------
 # find_change
 # ---------------------------------------------------------------------------
@@ -353,3 +391,156 @@ def test_find_change_with_file_filter(repo: Path):
     assert fc["commits"][0]["subject"] == "feat: add greet and temp file"
     with pytest.raises(ValueError, match="non-empty"):
         core.find_change(str(repo), "")
+
+
+def test_find_change_regex_mode_and_rename_following(forensics_repo: Path):
+    fc = core.find_change(str(forensics_repo), "slug(ify)?", file="src/helpers.py", regex=True)
+    # both commits happened while the file was still called src/util.py
+    assert [c["subject"] for c in fc["commits"]] == ["feat: util slugify", "feat: app skeleton"]
+    assert fc["mode"].startswith("-G")
+    with pytest.raises(ValueError, match="Invalid regular expression"):
+        core.find_change(str(forensics_repo), "(", regex=True)
+
+
+# ---------------------------------------------------------------------------
+# change_coupling
+# ---------------------------------------------------------------------------
+
+def test_change_coupling_pairs(forensics_repo: Path):
+    cc = core.change_coupling(str(forensics_repo), since="")
+    assert cc["commits_skipped_large"] == 1  # the 32-file licence sweep
+    assert cc["commits_analyzed"] == 17
+    assert cc["pairs"][0] == {
+        "file_a": "src/api.py", "file_b": "tests/test_api.py",
+        "shared_commits": 4, "degree": 1.0, "jaccard": 1.0,
+        "revisions_a": 4, "revisions_b": 4,
+    }
+    # rename-aware: two of the three shared commits touched src/util.py
+    assert cc["pairs"][1] == {
+        "file_a": "src/app.py", "file_b": "src/helpers.py",
+        "shared_commits": 3, "degree": 0.5, "jaccard": 0.3,
+        "revisions_a": 7, "revisions_b": 6,
+    }
+    assert cc["pairs_found"] == 2
+
+
+def test_change_coupling_skips_mass_commits(forensics_repo: Path):
+    default = core.change_coupling(str(forensics_repo), since="", min_shared=1, top=1000)
+    pairs = {(p["file_a"], p["file_b"]) for p in default["pairs"]}
+    assert ("legacy/parser.py", "src/app.py") not in pairs  # they only met in the sweep
+    wide = core.change_coupling(str(forensics_repo), since="", min_shared=1,
+                                max_files_per_commit=40, top=1000)
+    pairs = {(p["file_a"], p["file_b"]) for p in wide["pairs"]}
+    assert ("legacy/parser.py", "src/app.py") in pairs
+    assert wide["commits_skipped_large"] == 0
+
+
+def test_change_coupling_for_one_file(forensics_repo: Path):
+    cc = core.change_coupling(str(forensics_repo), file="src/app.py", since="", min_shared=1)
+    assert cc["revisions"] == 7
+    assert [(p["file"], p["shared_commits"]) for p in cc["partners"]] == [
+        ("src/helpers.py", 3), ("src/api.py", 1), ("tests/test_api.py", 1),
+    ]
+    with pytest.raises(ValueError, match="not a file tracked at HEAD"):
+        core.change_coupling(str(forensics_repo), file="src/util.py", since="")
+    with pytest.raises(ValueError, match="max_files_per_commit must be at least 2"):
+        core.change_coupling(str(forensics_repo), max_files_per_commit=1)
+
+
+# ---------------------------------------------------------------------------
+# knowledge_risk
+# ---------------------------------------------------------------------------
+
+def test_knowledge_risk_flags_orphaned_files(forensics_repo: Path):
+    kr = core.knowledge_risk(str(forensics_repo), inactive_after="2026-01-01")
+    assert kr["inactive_authors"] == ["Carol Gone"]
+    assert kr["files_analyzed"] == 38
+    assert kr["orphaned_files"] == 2
+    lexer, parser = kr["files"][0], kr["files"][1]
+    assert lexer["file"] == "legacy/lexer.py" and lexer["orphaned"] is True
+    assert lexer["inactive_percent"] == 100.0
+    assert lexer["main_owner"] == "Carol Gone" and lexer["main_owner_last_commit"] == "2025-06-20"
+    assert parser["file"] == "legacy/parser.py" and parser["inactive_percent"] == 83.3
+    assert kr["directories"][0] == {
+        "directory": "legacy", "files": 2, "lines": 15, "orphaned_files": 2, "inactive_percent": 93.3,
+    }
+    carol = next(a for a in kr["authors"] if a["author"] == "Carol Gone")
+    assert carol == {"author": "Carol Gone", "active": False, "last_commit": "2025-06-20",
+                     "lines_owned": 14, "lines_percent": 11.4, "files_as_main_owner": 2}
+
+
+def test_knowledge_risk_everyone_active(forensics_repo: Path):
+    kr = core.knowledge_risk(str(forensics_repo), inactive_after="2025-01-01")
+    assert kr["orphaned_files"] == 0
+    assert kr["inactive_authors"] == []
+
+
+def test_knowledge_risk_path_and_truncation(forensics_repo: Path):
+    scoped = core.knowledge_risk(str(forensics_repo), inactive_after="2026-01-01", path="legacy")
+    assert scoped["path"] == "legacy/"
+    assert [f["file"] for f in scoped["files"]] == ["legacy/lexer.py", "legacy/parser.py"]
+    capped = core.knowledge_risk(str(forensics_repo), inactive_after="2026-01-01", max_files=5)
+    assert capped["truncated"] is True
+    assert capped["files_considered"] == 38 and capped["files_analyzed"] == 5
+    assert "raise max_files" in capped["truncation_note"]
+    # the most frequently changed files are the ones kept
+    assert {f["file"] for f in capped["files"]} >= {"src/app.py", "src/api.py", "tests/test_api.py"}
+
+
+def test_knowledge_risk_skips_binary_files(forensics_repo: Path, tmp_path: Path):
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", str(forensics_repo), str(clone))
+    (clone / "logo.bin").write_bytes(bytes(range(256)) * 4)
+    git(clone, "add", "logo.bin")
+    git(clone, "-c", "user.name=T", "-c", "user.email=t@example.com",
+        "commit", "-q", "-m", "add binary", date="2026-05-11 10:00:00 +0000")
+    kr = core.knowledge_risk(str(clone), inactive_after="2026-01-01")
+    assert kr["binary_files_skipped"] == 1
+    assert "logo.bin" not in [f["file"] for f in kr["files"]]
+
+
+# ---------------------------------------------------------------------------
+# commit_details
+# ---------------------------------------------------------------------------
+
+def test_commit_details_rename(forensics_repo: Path):
+    cd = core.commit_details(str(forensics_repo), rev(forensics_repo, "refactor: rename util to helpers"))
+    assert cd["is_merge"] is False and len(cd["parents"]) == 1
+    assert cd["author"] == {"name": "Alice Dev", "email": "alice@example.com", "date": "2026-02-01T10:00:00Z"}
+    files = {f["path"]: f for f in cd["files"]}
+    assert files["src/helpers.py"]["status"] == "R"
+    assert files["src/helpers.py"]["old_path"] == "src/util.py"
+    assert files["src/helpers.py"]["similarity"] == 100
+    assert files[".mailmap"]["status"] == "A"
+    assert cd["stats"] == {"files_changed": 2, "insertions": 1, "deletions": 0}
+    assert cd["tags"] == ["v1.0.0"] and cd["first_tag"] == "v1.0.0~4"
+    assert set(cd["branches"]) == {"main", "feature/greeting", "feature/docs"}
+
+
+def test_commit_details_merge(forensics_repo: Path):
+    cd = core.commit_details(str(forensics_repo), rev(forensics_repo, "Merge branch 'feature/greeting'"))
+    assert cd["is_merge"] is True and len(cd["parents"]) == 2
+    assert cd["author"]["name"] == "Maint Merger"
+    assert cd["diff_against"].startswith("first parent")
+    assert sorted(f["path"] for f in cd["files"]) == ["src/api.py", "src/app.py", "tests/test_api.py"]
+    assert cd["tags"] == [] and cd["first_tag"] is None
+
+
+def test_commit_details_root_and_refs(forensics_repo: Path):
+    root = core.commit_details(str(forensics_repo), rev(forensics_repo, "feat: legacy parser and lexer"))
+    assert root["parents"] == [] and root["diff_against"].startswith("empty tree")
+    assert {f["status"] for f in root["files"]} == {"A"}
+    by_tag = core.commit_details(str(forensics_repo), "v1.0.0")
+    assert by_tag["subject"] == "fix: api off-by-one"
+    head = core.commit_details(str(forensics_repo), "HEAD")
+    assert head["subject"] == "feat: app config" and head["branches"] == ["main"]
+    short = core.commit_details(str(forensics_repo), head["short_hash"])
+    assert short["hash"] == head["hash"]
+
+
+def test_commit_details_rejects_bad_refs(forensics_repo: Path):
+    with pytest.raises(ValueError, match="Unknown commit 'nope'"):
+        core.commit_details(str(forensics_repo), "nope")
+    with pytest.raises(ValueError, match="must not start with '-'"):
+        core.commit_details(str(forensics_repo), "--output=pwned.txt")
+    assert not (forensics_repo / "pwned.txt").exists()

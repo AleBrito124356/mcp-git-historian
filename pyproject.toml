@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-git-historian"
-version = "0.1.0"
-description = "MCP server for git archaeology — churn hotspots, blame summaries, bus factor, commit forensics and file history over any local repository."
+version = "0.2.0"
+description = "MCP server and CLI for git archaeology: rename-aware churn hotspots, change coupling, knowledge-loss risk, bus factor, blame and commit forensics over any local repository."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -20,10 +20,13 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Software Development :: Version Control :: Git",
 ]
-dependencies = ["mcp>=1.2.0"]
+# Tested against mcp 1.10.0, 1.30.0 and 2.2.0; the server adapts to either major
+# version. The upper bound keeps a future breaking major from shipping silently.
+dependencies = ["mcp>=1.10,<3", "pydantic>=2"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
@@ -34,7 +37,7 @@ Source = "https://github.com/AleBrito124356/mcp-git-historian"
 Issues = "https://github.com/AleBrito124356/mcp-git-historian/issues"
 
 [project.scripts]
-mcp-git-historian = "mcp_git_historian.server:main"
+mcp-git-historian = "mcp_git_historian.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mcp_git_historian"]
