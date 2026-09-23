@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.AleBrito124356/mcp-git-historian",
   "title": "Git Historian",
-  "description": "Git archaeology: churn hotspots, blame summaries, bus factor and commit forensics.",
-  "version": "0.1.0",
+  "description": "Git archaeology: rename-aware hotspots, change coupling, knowledge-loss risk, bus factor and commit forensics.",
+  "version": "0.2.0",
   "repository": {
     "url": "https://github.com/AleBrito124356/mcp-git-historian",
     "source": "github"
@@ -13,7 +13,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "mcp-git-historian",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "runtimeHint": "uvx",
       "transport": {"type": "stdio"}
     }
