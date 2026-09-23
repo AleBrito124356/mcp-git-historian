@@ -111,10 +111,10 @@ def render_bus_factor(r: dict) -> list[str]:
     authors = [[a["author"], a["commits"], f"{a['percent']:g}%"] for a in r["top_authors"]]
     dirs = [[d["directory"], d["commits"], d["authors"], d["dominant_author"], f"{d['dominant_percent']:g}%",
              "SILO" if d["knowledge_silo"] else ""] for d in r["directories"]]
-    merges = "" if r["include_merges"] else f", {r['merge_commits_excluded']} merge commits excluded"
+    merges = "" if r["include_merges"] else f", merge commits excluded: {r['merge_commits_excluded']}"
     return [
-        f"Bus factor {r['bus_factor']} in {_where(r)} ({r['total_commits']} commits, "
-        f"{r['total_authors']} authors{merges})", "",
+        f"Bus factor {r['bus_factor']} in {_where(r)} (commits: {r['total_commits']}, "
+        f"authors: {r['total_authors']}{merges})", "",
         *_table(["author", "commits", "share"], authors, "lrr"), "",
         *_table(["directory", "commits", "authors", "dominant author", "share", "flag"], dirs, "lrrlrl"), "",
         f"Silo rule: {r['silo_rule']}.",
