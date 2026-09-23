@@ -161,15 +161,19 @@ def build_report(
     rows = []
     for h in hot["hotspots"][:top]:
         renamed = f" (was {', '.join(h['renamed_from'])})" if h.get("renamed_from") else ""
-        rows.append([_code(h["file"]) + _cell(renamed), h["commits"], f"+{h['lines_added']} / -{h['lines_deleted']}",
+        rows.append([_code(h["file"]) + _cell(renamed), h["commits"],
+                     f"+{h['lines_added']} / -{h['lines_deleted']}",
                      f"{h['churn_percentile']:g}", "yes" if "hint" in h else ""])
-    md += _table(["File", "Commits", "Lines", "Percentile", "Hotspot"], rows, "lrrrc") if rows else ["No changes in the window."]
+    if rows:
+        md += _table(["File", "Commits", "Lines", "Percentile", "Hotspot"], rows, "lrrrc")
+    else:
+        md.append("No changes in the window.")
     md += ["", f"_Rule: {hot['hint_rule']}._", ""]
 
     md += ["## Change coupling", ""]
     if coupling["pairs"]:
-        rows = [[_code(p["file_a"]), _code(p["file_b"]), p["shared_commits"], f"{p['degree']:.2f}", f"{p['jaccard']:.2f}"]
-                for p in coupling["pairs"][:top]]
+        rows = [[_code(p["file_a"]), _code(p["file_b"]), p["shared_commits"],
+                 f"{p['degree']:.2f}", f"{p['jaccard']:.2f}"] for p in coupling["pairs"][:top]]
         md += _table(["File", "Changes with", "Shared", "Degree", "Jaccard"], rows, "llrrr")
     else:
         md.append(f"No pair of files shares {coupling['min_shared']} or more commits in the window.")
@@ -183,16 +187,16 @@ def build_report(
     md += ["", f"_Silo rule: {bus['silo_rule']}._", "", "### Orphaned files (by surviving lines)", ""]
     orphans = [f for f in risk["files"] if f["orphaned"]]
     if orphans:
-        rows = [[_code(f["file"]), f["lines"], f["main_owner"], f["main_owner_last_commit"], f"{f['inactive_percent']:g}%"]
-                for f in orphans[:top]]
+        rows = [[_code(f["file"]), f["lines"], f["main_owner"], f["main_owner_last_commit"],
+                 f"{f['inactive_percent']:g}%"] for f in orphans[:top]]
         md += _table(["File", "Lines", "Main owner", "Owner's last commit", "Inactive share"], rows, "lrllr")
     else:
         md.append(f"None: every analysed file is mostly owned by someone active since {risk['inactive_after_date']}.")
     if risk["truncated"]:
         md += ["", f"_{risk['truncation_note']}._"]
     md += ["", "### Who owns the code", ""]
-    rows = [[a["author"], "yes" if a["active"] else "no", a["last_commit"], f"{a['lines_percent']:g}%", a["files_as_main_owner"]]
-            for a in risk["authors"][:top]]
+    rows = [[a["author"], "yes" if a["active"] else "no", a["last_commit"], f"{a['lines_percent']:g}%",
+             a["files_as_main_owner"]] for a in risk["authors"][:top]]
     md += _table(["Author", "Active", "Last commit", "Lines owned", "Files as main owner"], rows, "lclrr")
     md += [
         "",

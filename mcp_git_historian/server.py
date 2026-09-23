@@ -18,7 +18,8 @@ path...", "limit must be at least 1..."), so every tool converts them into a
 
 import functools
 import inspect
-from typing import Annotated, Any, Callable
+from collections.abc import Callable
+from typing import Annotated, Any
 
 from pydantic import Field
 
@@ -226,8 +227,11 @@ def change_coupling(
 @_tool("Knowledge-loss risk")
 def knowledge_risk(
     repo_path: RepoPath,
-    inactive_after: Annotated[str, Field(description="Authors with no commit since this git date are "
-                                                     "considered gone, e.g. '6 months ago', '2025-01-01'.")] = "6 months ago",
+    inactive_after: Annotated[
+        str,
+        Field(description="Authors with no commit since this git date are considered gone, "
+                          "e.g. '6 months ago', '2025-01-01'."),
+    ] = "6 months ago",
     top: Annotated[int, Field(description="Maximum number of files, authors and directories to list.", ge=1)] = 20,
     path: Annotated[str, Field(description="Optional folder or file (relative to the repository root) "
                                            "to restrict the analysis to.")] = "",

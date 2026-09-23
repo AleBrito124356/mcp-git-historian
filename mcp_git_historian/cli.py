@@ -11,11 +11,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from . import __version__, core
 from .report import build_report
+
 
 def _bar_glyph() -> str:
     """A full block where the console can print it, '#' on legacy code pages."""
@@ -36,10 +37,14 @@ def _table(headers: list[str], rows: list[list[object]], align: str = "") -> lis
     widths = [max(len(h), *(len(r[i]) for r in cells)) if cells else len(h) for i, h in enumerate(headers)]
 
     def fmt(row: list[str]) -> str:
-        parts = [c.rjust(w) if a == "r" else c.ljust(w) for c, w, a in zip(row, widths, align)]
+        parts = [c.rjust(w) if a == "r" else c.ljust(w) for c, w, a in zip(row, widths, align, strict=True)]
         return "  " + "  ".join(parts).rstrip()
 
     return [fmt(headers), "  " + "  ".join("-" * w for w in widths)] + [fmt(r) for r in cells]
+
+
+def _n(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
 
 
 def _where(result: dict) -> str:
@@ -84,14 +89,14 @@ def render_hotspots(r: dict) -> list[str]:
             + (f" (since {r['since_date']})" if r["since_date"] else ""), ""]
     body = _table(["commits", "added", "deleted", "pctl", "flag", "file"], rows, "rrrrll") if rows \
         else ["  (no files changed in the window)"]
-    return head + body + ["", f"{r['files_changed']} files changed; {r['hint_rule']}."]
+    return head + body + ["", f"{_n(r['files_changed'], 'file')} changed; {r['hint_rule']}."]
 
 
 def render_history(r: dict) -> list[str]:
     rows = [[c["hash"], c["date"], c["author"], f"+{c['lines_added']}", f"-{c['lines_deleted']}",
              c["subject"] + (f"  (renamed from {c['renamed_from']})" if c.get("renamed_from") else "")]
             for c in r["commits"]]
-    return [f"History of {r['file']} ({r['count']} commits)", ""] + \
+    return [f"History of {r['file']} ({_n(r['count'], 'commit')})", ""] + \
         _table(["hash", "date", "author", "added", "deleted", "subject"], rows, "lllrrl")
 
 
@@ -122,12 +127,12 @@ def render_bus_factor(r: dict) -> list[str]:
 
 
 def render_search(r: dict) -> list[str]:
-    return [f"{r['count']} commits matching {r['query']!r} ({r['mode']})", ""] + _commits(r)
+    return [f"{_n(r['count'], 'commit')} matching {r['query']!r} ({r['mode']})", ""] + _commits(r)
 
 
 def render_find_change(r: dict) -> list[str]:
     where = f" in {r['file']}" if r["file"] else ""
-    return [f"{r['count']} commits changed {r['pattern']!r}{where} ({r['mode']})", ""] + _commits(r)
+    return [f"{_n(r['count'], 'commit')} changed {r['pattern']!r}{where} ({r['mode']})", ""] + _commits(r)
 
 
 def render_coupling(r: dict) -> list[str]:
@@ -143,7 +148,7 @@ def render_coupling(r: dict) -> list[str]:
     body = _table(["shared", "degree", "jaccard", "pair"], rows, "rrrl") if rows \
         else [f"  (no pair shares {r['min_shared']}+ commits)"]
     return [f"Change coupling in {_where(r)} — {r['since']}", ""] + body + \
-        ["", f"{r['pairs_found']} pairs found; {note}."]
+        ["", f"{_n(r['pairs_found'], 'pair')} found; {note}."]
 
 
 def render_knowledge_risk(r: dict) -> list[str]:

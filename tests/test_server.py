@@ -121,12 +121,12 @@ def test_every_tool_runs_end_to_end(forensics_repo: Path):
         ("health_report", {"repo_path": repo, "since": "", "inactive_after": "2026-01-01"}),
     ]
     results = call_all(calls)
-    for (name, _), result in zip(calls, results):
+    for (name, _), result in zip(calls, results, strict=True):
         assert result.get("isError") is not True, (name, text_of(result))
         data = result["structuredContent"]
         assert data["repo_path"] == repo, name
         assert json.loads(text_of(result)) == data, name  # text mirror for older clients
-    by_name = {name: r["structuredContent"] for (name, _), r in zip(calls, results)}
+    by_name = {name: r["structuredContent"] for (name, _), r in zip(calls, results, strict=True)}
     assert by_name["repo_summary"]["total_authors"] == 3
     assert by_name["hotspots"]["hotspots"][0]["file"] == "src/app.py"
     assert by_name["file_history"]["count"] == 6

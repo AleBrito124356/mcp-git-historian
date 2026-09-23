@@ -26,12 +26,12 @@ import subprocess
 import time
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
-from typing import Iterator, Optional, Tuple
 
 GIT_TIMEOUT = 30  # seconds; override with the GIT_HISTORIAN_TIMEOUT env var
 TIMEOUT_ENV = "GIT_HISTORIAN_TIMEOUT"
@@ -64,7 +64,7 @@ _GIT_CONFIG = (
 # A change inside one commit: (old_path, new_path, lines_added, lines_deleted).
 # old_path == new_path unless the file was renamed/copied; the line counts
 # are None for binary files.
-Change = Tuple[str, str, Optional[int], Optional[int]]
+Change = tuple[str, str, int | None, int | None]
 
 
 # ---------------------------------------------------------------------------
